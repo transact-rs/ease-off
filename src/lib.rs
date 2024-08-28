@@ -34,8 +34,16 @@ impl<E> EaseOff<E> {
         Self::new_unlimited().with_timeout(timeout)
     }
 
+    pub fn new_timeout_opt(timeout: Option<Duration>) -> Self {
+        Self::new_unlimited().with_timeout_opt(timeout)
+    }
+
     pub fn new_deadline(deadline: Instant) -> Self {
         Self::new_unlimited().with_deadline(deadline)
+    }
+
+    pub fn new_deadline_opt(deadline: Option<Instant>) -> Self {
+        Self::new_unlimited().with_deadline_opt(deadline)
     }
 
     pub fn with_timeout(self, timeout: Duration) -> Self {
