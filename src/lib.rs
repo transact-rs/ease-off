@@ -42,8 +42,16 @@ impl<E> EaseOff<E> {
         Self { limit: Limit::Timeout(timeout), ..self }
     }
 
+    pub fn with_timeout_opt(self, timeout: Option<Duration>) -> Self {
+        Self { limit: timeout.map_or(Limit::Unlimited, Limit::Timeout), ..self }
+    }
+
     pub fn with_deadline(self, deadline: Instant) -> Self {
         Self { limit: Limit::Deadline(deadline), ..self }
+    }
+
+    pub fn with_deadline_opt(self, deadline: Option<Instant>) -> Self {
+        Self { limit: deadline.map_or(Limit::Unlimited, Limit::Deadline), ..self }
     }
 
     pub fn without_deadline(self) -> Self {
