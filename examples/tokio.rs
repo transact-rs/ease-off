@@ -21,7 +21,7 @@ impl RetryableError for Error {
 }
 
 impl FallibleOperation {
-    fn try_op(&mut self) -> Result<Success, Error> {
+    async fn try_op(&mut self) -> Result<Success, Error> {
         if self.tries_required > 0 {
             let remaining = self.tries_required;
             self.tries_required -= 1;
@@ -37,7 +37,8 @@ impl FallibleOperation {
     }
 }
 
-fn main() -> Result<(), Error> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Error> {
     let mut fallible = FallibleOperation {
         tries_required: 3,
     };
@@ -46,7 +47,8 @@ fn main() -> Result<(), Error> {
 
     loop {
         let Some(Success { message }) = ease_off
-            .try_blocking(|| fallible.try_op())
+            .try_async(fallible.try_op())
+            .await
             .inspect_err(|e| println!("error: {e:?}"))
             .or_retry()?
         else {

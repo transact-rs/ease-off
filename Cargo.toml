@@ -9,9 +9,13 @@ version = "1.0.1"
 features = ["rt", "time"]
 optional = true
 
-[dependencies.async-std]
-version = "1"
-optional = true
-
 [dependencies.rand]
 version = "0.8.5"
+
+[[example]]
+name = "tokio"
+required-features = ["tokio"]
+
+[dev-dependencies.tokio]
+version = "1.39.3"
+features = ["rt", "time", "macros"]

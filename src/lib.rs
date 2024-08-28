@@ -1,9 +1,8 @@
-use std::future::Future;
+use std::cmp;
 use std::time::{Duration, Instant};
-use rand::Rng;
 
 pub struct EaseOff<E> {
-    deadline: Instant,
+    limit: Limit,
     jitter: f32,
     multiplier: f32,
     next_delay: Duration,
@@ -11,20 +10,44 @@ pub struct EaseOff<E> {
     last_error: Option<E>,
 }
 
-impl<E> EaseOff<E> {
-    pub fn new_timeout(timeout: Duration) -> Self {
-        Self::new_deadline(Instant::now() + timeout)
-    }
+#[derive(Debug)]
+enum Limit {
+    Timeout(Duration),
+    Deadline(Instant),
+    Unlimited
+}
 
-    pub fn new_deadline(deadline: Instant) -> Self {
+impl<E> EaseOff<E> {
+    #[inline(always)]
+    pub fn new_unlimited() -> Self {
         Self {
-            deadline,
+            limit: Limit::Unlimited,
             jitter: 0.25,
             multiplier: 2.0,
             next_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(60),
             last_error: None
         }
+    }
+
+    pub fn new_timeout(timeout: Duration) -> Self {
+        Self::new_unlimited().with_timeout(timeout)
+    }
+
+    pub fn new_deadline(deadline: Instant) -> Self {
+        Self::new_unlimited().with_deadline(deadline)
+    }
+
+    pub fn with_timeout(self, timeout: Duration) -> Self {
+        Self { limit: Limit::Timeout(timeout), ..self }
+    }
+
+    pub fn with_deadline(self, deadline: Instant) -> Self {
+        Self { limit: Limit::Deadline(deadline), ..self }
+    }
+
+    pub fn without_deadline(self) -> Self {
+        Self { limit: Limit::Unlimited, ..self }
     }
 
     pub fn with_jitter(self, jitter: f32) -> Self {
@@ -44,31 +67,54 @@ impl<E> EaseOff<E> {
     }
 
     fn next_sleep_until(&mut self) -> Result<Option<Instant>, Error<E>> {
+        let deadline = self.limit.make_deadline();
+
+        let now = Instant::now();
+
+        // We attempt the operation at least once, even if the deadline has passed.
         if self.last_error.is_none() {
             return Ok(None);
         }
 
-        let now = Instant::now();
-
         let jitter = if self.jitter > 0f32 && self.jitter <= 1f32 {
-            rand::thread_rng().gen_range(1. - self.jitter .. 1. + self.jitter)
+            self.next_delay.mul_f32(self.jitter * rand::random::<f32>())
         } else {
-            1f32
+            Duration::ZERO
         };
 
-        let delay = self.next_delay.mul_f32(jitter);
+        // We only subtract `jitter`, never add it, so `deadline` becomes a semi-hard cutoff
+        let sleep_until = now + self.next_delay - jitter;
 
-        self.next_delay = self.next_delay.mul_f32(self.multiplier);
+        let sleep_until = deadline.map(|deadline| {
+            // If the deadline will pass before the next sleep,
+            // just sleep until the deadline minus jitter
+            cmp::min(sleep_until, deadline - jitter)
+        })
+            .unwrap_or(sleep_until);
 
-        let sleep_until = now + delay;
+        self.next_delay = cmp::min(self.next_delay.mul_f32(self.multiplier), self.max_delay);
 
-        Ok((sleep_until <= self.deadline).then_some(sleep_until))
+        Ok(Some(sleep_until))
+    }
+}
+
+impl Limit {
+    fn make_deadline(&mut self) -> Option<Instant> {
+        match *self {
+            Self::Deadline(deadline) => Some(deadline),
+            Self::Timeout(timeout) => {
+                let deadline = Instant::now() + timeout;
+                *self = Self::Deadline(deadline);
+                Some(deadline)
+            }
+            Self::Unlimited => None,
+        }
     }
 }
 
 macro_rules! try_sleep(
-    (self, $instant:ident => $sleep:expr) => {
-        match self.next_sleep_until() {
+    ($this:ident, $instant:ident => $sleep:expr) => {
+        match $this.next_sleep_until() {
             Ok(Some($instant)) => {
                 $sleep
             }
@@ -76,7 +122,7 @@ macro_rules! try_sleep(
             Err(e) => {
                 return ResultWrapper {
                     result: Err(e),
-                    last_error: &mut self.last_error
+                    last_error: &mut $this.last_error
                 }
             }
         }
@@ -88,24 +134,28 @@ impl<E> EaseOff<E> {
         try_sleep!(self, time => sleep_until(time));
 
         ResultWrapper {
-            result: op(),
+            result: op().map_err(Error::MaybeRetryable),
             last_error: &mut self.last_error,
         }
     }
 
-    pub async fn try_async<T>(&mut self, op: impl Future<Output = Result<T, E>>) -> ResultWrapper<'_, T, E> {
+    #[cfg(feature = "tokio")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
+    pub async fn try_async<T>(&mut self, op: impl std::future::Future<Output = Result<T, E>>) -> ResultWrapper<'_, T, E> {
         self.try_async_with(move || op).await
     }
 
+    #[cfg(feature = "tokio")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
     pub async fn try_async_with<T, F, Fut>(&mut self, op: F) -> ResultWrapper<'_, T, E>
     where
         F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<T, E>>
+        Fut: std::future::Future<Output = Result<T, E>>
     {
-        try_sleep!(self, time => async_sleep_until(time).await);
+        try_sleep!(self, time => tokio::time::sleep_until(time.into()).await);
 
         ResultWrapper {
-            result: op().await,
+            result: op().await.map_err(Error::MaybeRetryable),
             last_error: &mut self.last_error,
         }
     }
@@ -124,26 +174,26 @@ impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
         }
     }
 
-    pub fn map_err<E2: 'a>(self, map_err: impl FnOnce(Error<E>) -> Error<E2>) -> ResultWrapper<'a, T, E2> {
+    pub fn inspect_err(self, inspect_err: impl FnOnce(&Error<E>)) -> Self {
         Self {
-            result: self.result.map_err(map_err),
+            result: self.result.inspect_err(inspect_err),
             last_error: self.last_error,
         }
     }
 
-    pub fn or_fatal(self) -> Result<Option<T>, E> where E: RetryableError {
-        self.or_fatal_if(RetryableError::is_fatal)
+    pub fn or_retry(self) -> Result<Option<T>, E> where E: RetryableError {
+        self.or_retry_if(RetryableError::can_retry)
     }
 
-    pub fn or_fatal_if(self, is_fatal: impl FnOnce(&Error<E>) -> bool) -> Result<Option<T>, E> {
+    pub fn or_retry_if(self, can_retry: impl FnOnce(&Error<E>) -> bool) -> Result<Option<T>, E> {
         match self.result {
             Ok(success) => Ok(Some(success)),
             Err(e) => {
-                if is_fatal(&e) {
-                    Err(e)
-                } else {
-                    *self.last_error = Some(e);
+                if can_retry(&e) {
+                    *self.last_error = Some(e.into_inner());
                     Ok(None)
+                } else {
+                    Err(e.into_inner())
                 }
             }
         }
@@ -151,9 +201,10 @@ impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
 }
 
 pub trait RetryableError {
-    fn is_fatal(&self) -> bool;
+    fn can_retry(&self) -> bool;
 }
 
+#[derive(Debug)]
 pub enum Error<E> {
     MaybeRetryable(E),
     Fatal(E),
@@ -161,11 +212,11 @@ pub enum Error<E> {
 }
 
 impl<E: RetryableError> RetryableError for Error<E> {
-    fn is_fatal(&self) -> bool {
+    fn can_retry(&self) -> bool {
         match self {
-            Self::MaybeRetryable(e) => e.is_fatal(),
-            Self::Fatal(_) => true,
-            Self::TimedOut(_) => true,
+            Self::MaybeRetryable(e) => e.can_retry(),
+            Self::Fatal(_) => false,
+            Self::TimedOut(_) => false,
         }
     }
 }
@@ -195,31 +246,10 @@ impl<E> Error<E> {
     }
 }
 
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct TimeoutError<E> {
     pub last_error: E,
-}
-
-async fn async_sleep_until(instant: Instant) {
-    #[cfg(feature = "tokio")]
-    if let Ok(_runtime) = tokio::runtime::Handle::try_current() {
-        tokio::time::sleep_until(instant.into()).await;
-        return;
-    }
-
-    #[cfg(feature = "async-std")]
-    {
-        let now = Instant::now();
-
-        if let Some(sleep_duration) = instant.checked_duration_since(now) {
-            async_std::task::sleep(sleep_duration).await;
-        }
-    }
-
-    #[cfg(not(feature = "async-std"))]
-    {
-        panic!("no Tokio or async-std runtime available")
-    }
 }
 
 fn sleep_until(instant: Instant) {
