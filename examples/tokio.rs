@@ -43,7 +43,7 @@ async fn main() -> Result<(), Error> {
         tries_required: 3,
     };
 
-    let mut ease_off = EaseOff::new_timeout(Duration::from_secs(60));
+    let mut ease_off = EaseOff::start_timeout(Duration::from_secs(60));
 
     loop {
         let Some(Success { message }) = ease_off
