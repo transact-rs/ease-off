@@ -1,7 +1,10 @@
 // Note: crate root documentation is in the following file:
 #![doc = include_str!("lib.md")]
+use core::{calculate_jitter, duration_saturating_mul_f32};
 use std::cmp;
 use std::time::{Duration, Instant};
+
+pub mod core;
 
 /// Exponential backoff controller.
 ///
@@ -440,26 +443,4 @@ fn blocking_sleep_until(instant: Instant) {
     if let Some(sleep_duration) = instant.checked_duration_since(now) {
         std::thread::sleep(sleep_duration);
     }
-}
-
-// This does not exist in `std`
-#[inline(always)]
-fn duration_saturating_mul_f32(duration: Duration, mul: f32) -> Duration {
-    Duration::try_from_secs_f32(duration.as_secs_f32() * mul)
-        .unwrap_or(Duration::MAX)
-}
-
-#[inline(always)]
-fn calculate_jitter(base_duration: Duration, jitter_factor: f32) -> Duration {
-    let jitter_factor = if jitter_factor > 0f32 && jitter_factor < 1f32 {
-        1f32 - (jitter_factor * rand::random::<f32>())
-    } else if jitter_factor >= 1f32 {
-        // Act as if `jitter == 1`
-        1f32 - rand::random::<f32>()
-    } else {
-        // `jitter` is NaN or <= 0
-        0f32
-    };
-
-    duration_saturating_mul_f32(base_duration, jitter_factor)
 }
