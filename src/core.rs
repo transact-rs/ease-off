@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::cmp;
+use std::time::{Duration, Instant};
+
+use crate::Options;
 
 // This does not exist in `std`
 #[inline(always)]
@@ -19,4 +22,30 @@ pub fn calculate_jitter(base_duration: Duration, jitter_factor: f32) -> Duration
     };
 
     duration_saturating_mul_f32(base_duration, jitter_factor)
+}
+
+pub fn next_sleep_until(
+    now: Instant,
+    next_delay: &mut Duration,
+    deadline: Option<Instant>,
+    options: &Options,
+) -> Instant {
+    let jitter = calculate_jitter(*next_delay, options.jitter);
+
+    let sleep_until = now + jitter;
+
+    let sleep_until = deadline
+        .map(|deadline| {
+            // If the deadline will pass before the next sleep,
+            // just sleep until the deadline minus jitter
+            cmp::min(sleep_until, deadline - jitter)
+        })
+        .unwrap_or(sleep_until);
+
+    *next_delay = cmp::min(
+        duration_saturating_mul_f32(*next_delay, options.multiplier),
+        options.max_delay,
+    );
+
+    sleep_until
 }

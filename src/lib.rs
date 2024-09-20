@@ -269,11 +269,8 @@ impl<E> EaseOff<E> {
 
     fn next_sleep_until(&mut self) -> Result<Option<Instant>, Error<E>> {
         let Options {
-            jitter,
             initial_jitter,
-            multiplier,
             initial_delay,
-            max_delay,
             ..
         } = self.options;
 
@@ -293,25 +290,12 @@ impl<E> EaseOff<E> {
             return Err(Error::TimedOut(TimeoutError { last_error: e }));
         }
 
-        let jitter = calculate_jitter(self.next_delay, jitter);
-
-        let sleep_until = now + jitter;
-
-        let sleep_until = self
-            .deadline
-            .map(|deadline| {
-                // If the deadline will pass before the next sleep,
-                // just sleep until the deadline minus jitter
-                cmp::min(sleep_until, deadline - jitter)
-            })
-            .unwrap_or(sleep_until);
-
-        self.next_delay = cmp::min(
-            duration_saturating_mul_f32(self.next_delay, multiplier),
-            max_delay,
-        );
-
-        Ok(Some(sleep_until))
+        Ok(Some(core::next_sleep_until(
+            now,
+            &mut self.next_delay,
+            self.deadline,
+            &self.options,
+        )))
     }
 }
 
