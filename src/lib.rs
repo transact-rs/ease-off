@@ -110,7 +110,10 @@ impl Options {
     /// [thundering herd problem]: https://en.wikipedia.org/wiki/Thundering_herd_problem
     #[inline(always)]
     pub const fn initial_jitter(self, initial_jitter: f32) -> Self {
-        Self { initial_jitter, .. self }
+        Self {
+            initial_jitter,
+            ..self
+        }
     }
 
     /// Get the jitter factor used for the _first_ attempt.
@@ -124,7 +127,10 @@ impl Options {
     /// Set the delay for the first backoff attempt.
     #[inline(always)]
     pub const fn initial_delay(self, initial_delay: Duration) -> Self {
-        Self { initial_delay, ..self }
+        Self {
+            initial_delay,
+            ..self
+        }
     }
 
     /// Get the delay for the first backoff attempt.
@@ -184,7 +190,10 @@ impl Options {
     #[inline(always)]
     pub fn start_timeout_opt<E>(&self, timeout: Option<Duration>) -> EaseOff<E> {
         let started_at = Instant::now();
-        self.start(started_at, timeout.and_then(|timeout| started_at.checked_add(timeout)))
+        self.start(
+            started_at,
+            timeout.and_then(|timeout| started_at.checked_add(timeout)),
+        )
     }
 
     /// Begin backing off, halting attempts at the given deadline.
@@ -259,20 +268,28 @@ impl<E> EaseOff<E> {
     }
 
     fn next_sleep_until(&mut self) -> Result<Option<Instant>, Error<E>> {
-        let Options { jitter, initial_jitter, multiplier, initial_delay, max_delay, .. } = self.options;
+        let Options {
+            jitter,
+            initial_jitter,
+            multiplier,
+            initial_delay,
+            max_delay,
+            ..
+        } = self.options;
 
         let now = Instant::now();
 
         if self.last_error.is_none() {
-            return Ok(
-                (initial_jitter > 0f32)
-                    .then(|| calculate_jitter(initial_delay, initial_jitter))
-                    .and_then(|jitter| now.checked_add(jitter))
-            );
+            return Ok((initial_jitter > 0f32)
+                .then(|| calculate_jitter(initial_delay, initial_jitter))
+                .and_then(|jitter| now.checked_add(jitter)));
         }
 
         // We attempt the operation at least once, even if the deadline has passed.
-        if let Some(e) = self.last_error.take_if(|_| self.deadline.is_some_and(|deadline| now > deadline)) {
+        if let Some(e) = self
+            .last_error
+            .take_if(|_| self.deadline.is_some_and(|deadline| now > deadline))
+        {
             return Err(Error::TimedOut(TimeoutError { last_error: e }));
         }
 
@@ -280,16 +297,18 @@ impl<E> EaseOff<E> {
 
         let sleep_until = now + jitter;
 
-        let sleep_until = self.deadline.map(|deadline| {
-            // If the deadline will pass before the next sleep,
-            // just sleep until the deadline minus jitter
-            cmp::min(sleep_until, deadline - jitter)
-        })
+        let sleep_until = self
+            .deadline
+            .map(|deadline| {
+                // If the deadline will pass before the next sleep,
+                // just sleep until the deadline minus jitter
+                cmp::min(sleep_until, deadline - jitter)
+            })
             .unwrap_or(sleep_until);
 
         self.next_delay = cmp::min(
             duration_saturating_mul_f32(self.next_delay, multiplier),
-            max_delay
+            max_delay,
         );
 
         Ok(Some(sleep_until))
@@ -315,7 +334,10 @@ macro_rules! try_sleep(
 
 impl<E> EaseOff<E> {
     /// Attempt a blocking operation.
-    pub fn try_blocking<T>(&mut self, op: impl FnOnce() -> Result<T, E>) -> ResultWrapper<'_, T, E> {
+    pub fn try_blocking<T>(
+        &mut self,
+        op: impl FnOnce() -> Result<T, E>,
+    ) -> ResultWrapper<'_, T, E> {
         try_sleep!(self, time => blocking_sleep_until(time));
 
         ResultWrapper {
@@ -326,7 +348,10 @@ impl<E> EaseOff<E> {
 
     #[cfg(feature = "tokio")]
     #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
-    pub async fn try_async<T>(&mut self, op: impl std::future::Future<Output = Result<T, E>>) -> ResultWrapper<'_, T, E> {
+    pub async fn try_async<T>(
+        &mut self,
+        op: impl std::future::Future<Output = Result<T, E>>,
+    ) -> ResultWrapper<'_, T, E> {
         self.try_async_with(move || op).await
     }
 
@@ -335,7 +360,7 @@ impl<E> EaseOff<E> {
     pub async fn try_async_with<T, F, Fut>(&mut self, op: F) -> ResultWrapper<'_, T, E>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<T, E>>
+        Fut: std::future::Future<Output = Result<T, E>>,
     {
         try_sleep!(self, time => tokio::time::sleep_until(time.into()).await);
 
@@ -352,7 +377,10 @@ pub struct ResultWrapper<'a, T, E: 'a> {
 }
 
 impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
-    pub fn on_timeout(self, on_timeout: impl FnOnce(TimeoutError<E>) -> Error<E>) -> ResultWrapper<'a, T, E> {
+    pub fn on_timeout(
+        self,
+        on_timeout: impl FnOnce(TimeoutError<E>) -> Error<E>,
+    ) -> ResultWrapper<'a, T, E> {
         Self {
             result: self.result.map_err(|e| e.on_timeout(on_timeout)),
             last_error: self.last_error,
@@ -366,7 +394,10 @@ impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
         }
     }
 
-    pub fn or_retry(self) -> Result<Option<T>, E> where E: RetryableError {
+    pub fn or_retry(self) -> Result<Option<T>, E>
+    where
+        E: RetryableError,
+    {
         self.or_retry_if(RetryableError::can_retry)
     }
 
@@ -416,9 +447,11 @@ impl<E> Error<E> {
 
     pub fn map<E2>(self, map: impl FnOnce(E) -> E2) -> Error<E2> {
         match self {
-            Self::TimedOut(e) => Error::TimedOut(TimeoutError { last_error: map(e.last_error) }),
+            Self::TimedOut(e) => Error::TimedOut(TimeoutError {
+                last_error: map(e.last_error),
+            }),
             Self::MaybeRetryable(e) => Error::MaybeRetryable(map(e)),
-            Self::Fatal(e) => Error::Fatal(map(e))
+            Self::Fatal(e) => Error::Fatal(map(e)),
         }
     }
 

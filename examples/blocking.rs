@@ -1,5 +1,5 @@
-use std::time::Duration;
 use ease_off::{EaseOff, RetryableError};
+use std::time::Duration;
 
 struct FallibleOperation {
     tries_required: usize,
@@ -27,7 +27,7 @@ impl FallibleOperation {
             self.tries_required -= 1;
 
             Err(Error {
-                message: format!("failure! tries remaining: {remaining}")
+                message: format!("failure! tries remaining: {remaining}"),
             })
         } else {
             Ok(Success {
@@ -38,9 +38,7 @@ impl FallibleOperation {
 }
 
 fn main() -> Result<(), Error> {
-    let mut fallible = FallibleOperation {
-        tries_required: 3,
-    };
+    let mut fallible = FallibleOperation { tries_required: 3 };
 
     let mut ease_off = EaseOff::start_timeout(Duration::from_secs(60));
 
