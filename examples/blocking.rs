@@ -1,4 +1,4 @@
-use ease_off::{EaseOff, RetryableError};
+use ease_off::RetryableError;
 use std::time::Duration;
 
 struct FallibleOperation {
@@ -10,8 +10,8 @@ struct Success {
 }
 
 #[derive(Debug)]
-struct Error {
-    message: String,
+pub struct Error {
+    pub message: String,
 }
 
 impl RetryableError for Error {
@@ -37,10 +37,16 @@ impl FallibleOperation {
     }
 }
 
+const OPTIONS: ease_off::Options = ease_off::Options::new()
+    // Set a longer `initial_delay` so we can see it working
+    .initial_delay(Duration::from_secs(1));
+
 fn main() -> Result<(), Error> {
     let mut fallible = FallibleOperation { tries_required: 3 };
 
-    let mut ease_off = EaseOff::start_timeout(Duration::from_secs(60));
+    // If you just want to use the default options:
+    // let mut ease_off = EaseOff::start_timeout(Duration::from_secs(60));
+    let mut ease_off = OPTIONS.start_timeout(Duration::from_secs(60));
 
     loop {
         let Some(Success { message }) = ease_off

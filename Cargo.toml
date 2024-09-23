@@ -3,6 +3,7 @@ name = "ease-off"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.80.0"
+autoexamples = false
 
 [dependencies]
 thiserror = "1.0.64"
@@ -15,10 +16,24 @@ optional = true
 [dependencies.rand]
 version = "0.8.5"
 
-[[example]]
-name = "tokio"
-required-features = ["tokio"]
+[dev-dependencies]
+futures = "0.3.30"
 
 [dev-dependencies.tokio]
 version = "1.39.3"
 features = ["rt", "time", "macros"]
+
+[dev-dependencies.tokio-util]
+version = "0.7.12"
+features = ["time"]
+
+[[example]]
+name = "blocking"
+
+[[example]]
+name = "tokio"
+required-features = ["tokio"]
+
+[[example]]
+name = "tokio-concurrent"
+required-features = ["tokio"]
