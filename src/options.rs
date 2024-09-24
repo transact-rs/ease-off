@@ -153,6 +153,7 @@ impl Options {
     }
 
     /// Convert this `Options` into an [`EaseOffCore`].
+    #[inline(always)]
     pub const fn into_core(self) -> EaseOffCore {
         EaseOffCore::new(self)
     }

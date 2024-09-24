@@ -70,6 +70,7 @@ name = "ease-off"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "pin-project-lite",
  "rand",
  "thiserror",
  "tokio",

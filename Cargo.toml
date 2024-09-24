@@ -3,18 +3,25 @@ name = "ease-off"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.80.0"
-autoexamples = false
+
+description = "An easy, opinionated exponential backoff implementation."
+keywords = ["backoff", "exponential", "retry"]
+repository = "https://github.com/transact-rs/ease-off"
+authors = ["Austin Bonander <austin.bonander+ease-off@gmail.com>"]
+license = "MIT OR Apache-2.0"
+
+[features]
+tokio = ["dep:tokio", "pin-project-lite"]
 
 [dependencies]
+pin-project-lite = { version = "0.2.14", optional = true }
+rand = "0.8.5"
 thiserror = "1.0.64"
 
 [dependencies.tokio]
 version = "1.0.1"
 features = ["rt", "time"]
 optional = true
-
-[dependencies.rand]
-version = "0.8.5"
 
 [dev-dependencies]
 futures = "0.3.30"
@@ -26,9 +33,6 @@ features = ["rt", "time", "macros"]
 [dev-dependencies.tokio-util]
 version = "0.7.12"
 features = ["time"]
-
-[[example]]
-name = "blocking"
 
 [[example]]
 name = "tokio"

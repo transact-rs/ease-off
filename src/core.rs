@@ -4,15 +4,16 @@
 //! e.g. retrying many similar operations concurrently,
 //! or when a convenient error type is not available.
 //!
-//! # Example: Schedule Many Operations with [`tokio_util::time::DelayQueue`]
+//! # Example: Schedule Many Operations with `tokio_util::time::DelayQueue`
 //!
 //! (Source: `examples/tokio-concurrent.rs`)
-#![doc = "```rust"]
-#![cfg_attr(feature = "tokio", doc = include_str!("../examples/tokio-concurrent.rs"))]
+#![cfg_attr(feature = "tokio", doc = "```rust")]
 #![cfg_attr(
     not(feature = "tokio"),
-    doc = "// `tokio` feature required to compile this example\nfn main() {}"
+    doc = "```rust,ignore\n\
+           // Note: example not compiled if `tokio` feature is not enabled.\n"
 )]
+#![doc = include_str!("../examples/tokio-concurrent.rs")]
 // If this were written using `//!`, RustRover would think this is the start of a new code block.
 #![doc = "```"]
 
@@ -22,13 +23,13 @@ use std::cmp;
 use std::time::{Duration, Instant};
 
 /// Immutable core backoff API, without error management or sleeps.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EaseOffCore {
     options: Options,
 }
 
 /// Error returned by [`EaseOffCore::nth_retry_at()`].
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("{n}th retry is {:?} after deadline", retry_at.duration_since(*deadline))]
 pub struct RetryAfterDeadline {
     /// The `n` passed to `nth_retry_at()`.
@@ -39,6 +40,10 @@ pub struct RetryAfterDeadline {
 }
 
 impl EaseOffCore {
+    /// Create an instance from a built [`Options`].
+    ///
+    /// May be more conveniently invoked as [`Options::into_core()`].
+    #[inline(always)]
     pub const fn new(options: Options) -> Self {
         Self { options }
     }

@@ -21,18 +21,24 @@
 //! ## Async Operation (Tokio)
 //!
 //! (Source: `examples/tokio.rs`)
-#![doc = "```rust"]
-#![cfg_attr(feature = "tokio", doc = include_str!("../examples/tokio.rs"))]
+#![cfg_attr(feature = "tokio", doc = "```rust")]
 #![cfg_attr(
     not(feature = "tokio"),
-    doc = "// `tokio` feature required to compile this example\nfn main() {}"
+    doc = "```rust,ignore\n\
+           // Note: example not compiled if `tokio` feature is not enabled.\n"
 )]
+#![doc = include_str!("../examples/tokio.rs")]
 // If this were written using `//!`, RustRover would think this is the start of a new code block.
 #![doc = "```"]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 use crate::core::EaseOffCore;
 use std::num::Saturating;
 use std::time::{Duration, Instant};
+
+#[cfg(feature = "tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
+pub mod futures;
 
 pub mod core;
 
@@ -134,6 +140,13 @@ impl<E> EaseOff<E> {
                 })
             })
     }
+
+    fn wrap_result<T>(&mut self, result: Result<T, Error<E>>) -> ResultWrapper<'_, T, E> {
+        ResultWrapper {
+            result,
+            last_error: &mut self.last_error,
+        }
+    }
 }
 
 macro_rules! try_sleep(
@@ -155,43 +168,28 @@ macro_rules! try_sleep(
 
 impl<E> EaseOff<E> {
     /// Attempt a blocking operation.
+    ///
+    /// ### Note: Behavior at Deadline
+    /// Most blocking operations cannot be cancelled once begun, so the [deadline][Self::deadline],
+    /// if set, is only checked *before* attempting the operation.
+    ///
+    /// Generally, the only kinds of blocking operations that support cancellation
+    /// take an explicit timeout (such as setting a read timeout on a socket).
+    ///
+    /// If you want a blocking operation to be cancelled immediately once the deadline elapses,
+    /// consult the documentation for the API you are calling to see if timeouts are supported,
+    /// and if so, how to configure them.
     pub fn try_blocking<T>(
         &mut self,
         op: impl FnOnce() -> Result<T, E>,
     ) -> ResultWrapper<'_, T, E> {
         try_sleep!(self, time => blocking_sleep_until(time));
 
-        ResultWrapper {
-            result: op().map_err(Error::MaybeRetryable),
-            last_error: &mut self.last_error,
-        }
-    }
-
-    #[cfg(feature = "tokio")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
-    pub async fn try_async<T>(
-        &mut self,
-        op: impl std::future::Future<Output = Result<T, E>>,
-    ) -> ResultWrapper<'_, T, E> {
-        self.try_async_with(move || op).await
-    }
-
-    #[cfg(feature = "tokio")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
-    pub async fn try_async_with<T, F, Fut>(&mut self, op: F) -> ResultWrapper<'_, T, E>
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<T, E>>,
-    {
-        try_sleep!(self, time => tokio::time::sleep_until(time.into()).await);
-
-        ResultWrapper {
-            result: op().await.map_err(Error::MaybeRetryable),
-            last_error: &mut self.last_error,
-        }
+        self.wrap_result(op().map_err(Error::MaybeRetryable))
     }
 }
 
+#[must_use = "`.or_retry()` or `.or_retry_if()` must be called"]
 pub struct ResultWrapper<'a, T, E: 'a> {
     result: Result<T, Error<E>>,
     last_error: &'a mut Option<E>,

@@ -18,7 +18,9 @@ struct Operation {
 
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 
-const EASE_OFF: EaseOffCore = ease_off::Options::new()
+// `static` is recommended over `const`;
+// otherwise, an `EaseOffCore` will be instantiated on the stack wherever this is used.
+static EASE_OFF: EaseOffCore = ease_off::Options::new()
     // Delay the first attempt by up to 25% of `initial_delay`
     .initial_jitter(0.25)
     // So the example doesn't take forever
