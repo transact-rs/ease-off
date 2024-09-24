@@ -151,7 +151,7 @@ where
             this.ease_off
                 .take()
                 .expect("BUG: this.ease_off already taken")
-                .wrap_result(res)
+                .wrap_result(res),
         )
     }
 }

@@ -81,6 +81,8 @@ impl EaseOffCore {
 
             (delay, jitter)
         } else {
+            // We actually _want_ this to evaluate to false if NaN.
+            #[allow(clippy::neg_cmp_op_on_partial_ord)]
             if !(initial_jitter > 0f32) {
                 return Ok(None);
             }

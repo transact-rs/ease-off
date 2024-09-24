@@ -1,0 +1,63 @@
+# Reference: https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install or Update Rust
+        run:
+          rustup update
+
+      - name: Check rust code formatting
+        run: cargo fmt --check --all
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install or Update Rust
+        run:
+          rustup update
+
+      - name: Lint
+        run: cargo clippy --all-targets --workspace -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - name: Check out
+      uses: actions/checkout@v4
+
+    - name: Rust cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: Install or Update Rust
+      run: rustup update
+
+    - name: Build
+      run: cargo build --all-targets
+
+    - name: Run Tests
+      run: cargo test --workspace
