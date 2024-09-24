@@ -1,4 +1,4 @@
-//!An easy, opinionated exponential backoff implementation.
+//! An easy, opinionated exponential backoff implementation.
 //!
 //! Benefits over other implementations:
 //! * More flexible control flow (you implement the loop yourself).
@@ -109,11 +109,13 @@ impl<E> EaseOff<E> {
     fn next_sleep_until(&mut self) -> Result<Option<Instant>, Error<E>> {
         let now = Instant::now();
 
+        let mut rng = rand::thread_rng();
+
         if self.last_error.is_none() {
             self.num_attempts = Saturating(0);
             return Ok(self
                 .core
-                .nth_retry_at(0, now, None)
+                .nth_retry_at(0, now, None, &mut rng)
                 .expect("passed `None` for deadline, should not be `Err`"));
         }
 
@@ -122,7 +124,7 @@ impl<E> EaseOff<E> {
         self.num_attempts += 1;
 
         self.core
-            .nth_retry_at(attempt_num, now, self.deadline)
+            .nth_retry_at(attempt_num, now, self.deadline, &mut rng)
             .map_err(|_e| {
                 Error::TimedOut(TimeoutError {
                     last_error: self

@@ -17,6 +17,7 @@
 #![doc = "```"]
 
 use crate::options::Options;
+use rand::Rng;
 use std::cmp;
 use std::time::{Duration, Instant};
 
@@ -26,10 +27,13 @@ pub struct EaseOffCore {
     options: Options,
 }
 
+/// Error returned by [`EaseOffCore::nth_retry_at()`].
 #[derive(Debug, thiserror::Error)]
 #[error("{n}th retry is {:?} after deadline", retry_at.duration_since(*deadline))]
 pub struct RetryAfterDeadline {
+    /// The `n` passed to `nth_retry_at()`.
     pub n: u32,
+    /// The recommended time for the `n`th backoff attempt.
     pub retry_at: Instant,
     pub deadline: Instant,
 }
@@ -39,7 +43,7 @@ impl EaseOffCore {
         Self { options }
     }
 
-    /// Returns the recommended time for Nth backoff attempt.
+    /// Returns the recommended [`Instant`] at which to schedule the `n`th backoff attempt.
     ///
     /// Returns `Ok(None)` if `n == 0` and [`Options::initial_jitter`] is not greater than zero.
     ///
@@ -49,6 +53,7 @@ impl EaseOffCore {
         n: u32,
         now: Instant,
         deadline: Option<Instant>,
+        rng: &mut (impl Rng + ?Sized),
     ) -> Result<Option<Instant>, RetryAfterDeadline> {
         let Options {
             multiplier,
@@ -67,7 +72,7 @@ impl EaseOffCore {
                 max_delay,
             );
 
-            let jitter = get_jitter(delay, jitter);
+            let jitter = get_jitter(delay, jitter, rng);
 
             (delay, jitter)
         } else {
@@ -75,7 +80,7 @@ impl EaseOffCore {
                 return Ok(None);
             }
 
-            let jitter = get_jitter(initial_delay, initial_jitter);
+            let jitter = get_jitter(initial_delay, initial_jitter, rng);
             (initial_delay, jitter)
         };
 
@@ -99,13 +104,16 @@ fn duration_saturating_mul_f32(duration: Duration, mul: f32) -> Duration {
     Duration::try_from_secs_f32(duration.as_secs_f32() * mul).unwrap_or(Duration::MAX)
 }
 
-#[inline(always)]
-fn get_jitter(base_duration: Duration, jitter_factor: f32) -> Duration {
+fn get_jitter(
+    base_duration: Duration,
+    jitter_factor: f32,
+    rng: &mut (impl Rng + ?Sized),
+) -> Duration {
     let jitter_factor = if jitter_factor > 0f32 && jitter_factor < 1f32 {
-        jitter_factor * rand::random::<f32>()
+        jitter_factor * rng.gen::<f32>()
     } else if jitter_factor >= 1f32 {
         // Act as if `jitter == 1`
-        rand::random::<f32>()
+        rng.gen::<f32>()
     } else {
         // `jitter` is NaN or <= 0
         0f32

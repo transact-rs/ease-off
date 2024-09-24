@@ -40,12 +40,21 @@ async fn main() {
         })
         .collect::<Vec<_>>();
 
+    // Note: this will make the resulting future `!Send`.
+    //
+    // This is fine for `async fn main()`, which does not have a `Send` requirement,
+    // but may cause problems in a spawned task.
+    //
+    // If you get errors about a future not being `Send`,
+    // scope the `rng` binding such that its lifetime does not cross an `.await` point.
+    let mut rng = rand::thread_rng();
+
     // Schedule the initial attempts:
     for (i, _op) in operations.iter().enumerate() {
         scheduled_attempts.insert_at(
             i,
             EASE_OFF
-                .nth_retry_at(0, started_at, None)
+                .nth_retry_at(0, started_at, None, &mut rng)
                 .expect("passed `None` for deadline, should not be `Err`")
                 .expect("initial_jitter is set, should not be `None`")
                 // `nth_sleep_until()` returns `std::time::Instant`
@@ -71,7 +80,7 @@ async fn main() {
             Err(_) => {
                 let attempt_num = operation.num_attempts.0;
 
-                match EASE_OFF.nth_retry_at(attempt_num, now, Some(operation.deadline)) {
+                match EASE_OFF.nth_retry_at(attempt_num, now, Some(operation.deadline), &mut rng) {
                     Ok(Some(retry_at)) => {
                         scheduled_attempts.insert_at(i, retry_at.into());
                     }
