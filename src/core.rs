@@ -36,6 +36,7 @@ pub struct RetryAfterDeadline {
     pub n: u32,
     /// The recommended time for the `n`th backoff attempt.
     pub retry_at: Instant,
+    /// The deadline that elapsed.
     pub deadline: Instant,
 }
 

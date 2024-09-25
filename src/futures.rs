@@ -1,3 +1,5 @@
+//! Backoff support for `async`/`await`.
+
 use crate::{EaseOff, Error, ResultWrapper, TimeoutError};
 
 use pin_project::pin_project;
@@ -6,10 +8,10 @@ use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 use std::time::Instant;
 
-/// Backoff support for `async/await`.
+/// Backoff support for `async`/`await`.
 ///
 /// ### Note: Behavior at Deadline
-/// Unless otherwise stated, async operations are _not_ cancelled at the [deadline][Self::deadline]
+/// Unless otherwise stated, async operations are _not_ cancelled at the [deadline][Self::deadline()]
 /// once they are in-progress.
 ///
 /// More specifically, if the deadline elapses after an async operation has begun, i.e.
@@ -52,12 +54,33 @@ impl<E> EaseOff<E> {
 }
 
 /// `.await`able type returned by [`EaseOff::try_async()`] and [`EaseOff::try_async_with()`].
+///
+/// ### Panics
+/// If an async runtime is not available for sleeping between retries.
+///
+/// ### Note: Behavior at Deadline
+/// Unless otherwise stated, async operations are _not_ cancelled at the [deadline][EaseOff::deadline()]
+/// once they are in-progress.
+///
+/// More specifically, if the deadline elapses after an async operation has begun, i.e.
+/// the future returned by these methods is `.await`ed or polled,
+/// it will be allowed to run to completion.
+///
+/// To cancel an in-progress operation when the deadline elapses,
+/// use [`Self::enforce_deadline_with()`].
 #[must_use = "futures do nothing unless `.await`ed or polled"]
 pub struct TryAsync<'a, E, F> {
     ease_off: &'a mut EaseOff<E>,
     op: F,
 }
 
+/// [`Future`] returned by [`TryAsync::into_future()`], [`TryAsync::enforce_deadline_with()`].
+///
+/// If the current state of the [`EaseOff`] prescribes a sleep before the next attempt,
+/// the future will not be invoked immediately.
+///
+/// ### Panics
+/// If an async runtime is not available for sleeping between retries.
 #[pin_project]
 pub struct TryAsyncFuture<'a, E, F, Fut> {
     // Wrapped in `Option` so we can take and subsequently return ownership in `poll()`
@@ -106,10 +129,13 @@ where
     Fut: Future<Output = Result<T, E>>,
 {
     // TODO: design an API that automatically creates an `E` for convenience/reusability
-    /// Cancel the operation as soon as the [deadline][Self::deadline] elapses, if set.
+    /// Cancel the operation as soon as the [deadline][EaseOff::deadline()] elapses, if set.
     ///
     /// The closure will be called to produce the error that will be returned;
     /// if the operation failed on a previous attempt, that error is included.
+    ///
+    /// ### Panics
+    /// If an async runtime is not available for managing the timeout.
     ///
     /// ### Example
     ///

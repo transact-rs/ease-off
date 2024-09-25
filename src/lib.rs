@@ -31,6 +31,7 @@
 // If this were written using `//!`, RustRover would think this is the start of a new code block.
 #![doc = "```"]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 
 use crate::core::EaseOffCore;
 use std::num::Saturating;
@@ -112,7 +113,7 @@ impl<E> EaseOff<E> {
         self.num_attempts.0
     }
 
-    fn next_sleep_until(&mut self) -> Result<Option<Instant>, Error<E>> {
+    fn next_retry_at(&mut self) -> Result<Option<Instant>, Error<E>> {
         let now = Instant::now();
 
         let mut rng = rand::thread_rng();
@@ -149,25 +150,11 @@ impl<E> EaseOff<E> {
     }
 }
 
-macro_rules! try_sleep(
-    ($this:ident, $instant:ident => $sleep:expr) => {
-        match $this.next_sleep_until() {
-            Ok(Some($instant)) => {
-                $sleep
-            }
-            Ok(None) => (),
-            Err(e) => {
-                return ResultWrapper {
-                    result: Err(e),
-                    last_error: &mut $this.last_error
-                }
-            }
-        }
-    }
-);
-
 impl<E> EaseOff<E> {
     /// Attempt a blocking operation.
+    ///
+    /// If the operation previously failed, sleeps for the prescribed backoff period
+    /// using [`std::thread::sleep()`].
     ///
     /// ### Note: Behavior at Deadline
     /// Most blocking operations cannot be cancelled once begun, so the [deadline][Self::deadline],
@@ -183,12 +170,22 @@ impl<E> EaseOff<E> {
         &mut self,
         op: impl FnOnce() -> Result<T, E>,
     ) -> ResultWrapper<'_, T, E> {
-        try_sleep!(self, time => blocking_sleep_until(time));
+        match self.next_retry_at() {
+            Ok(Some(instant)) => {
+                blocking_sleep_until(instant);
+            }
+            Ok(None) => (),
+            Err(e) => return self.wrap_result(Err(e)),
+        }
 
         self.wrap_result(op().map_err(Error::MaybeRetryable))
     }
 }
 
+/// Wrapper for [`Result`] returned from methods on [`EaseOff`].
+///
+/// Retryable errors will be stored in the `EaseOff` to be returned on the next attempt
+/// if the [deadline][EaseOff::deadline] has passed.
 #[must_use = "`.or_retry()` or `.or_retry_if()` must be called"]
 pub struct ResultWrapper<'a, T, E: 'a> {
     result: Result<T, Error<E>>,
@@ -196,6 +193,11 @@ pub struct ResultWrapper<'a, T, E: 'a> {
 }
 
 impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
+    /// Convert a [`TimeoutError`], if applicable, to another [`Error`] variant.
+    ///
+    /// May be used to convert a timeout error into [`Error::MaybeRetryable`].
+    ///
+    /// If not otherwise handled, `.or_retry()` and `.or_retry_if()` will return the error.
     pub fn on_timeout(
         self,
         on_timeout: impl FnOnce(TimeoutError<E>) -> Error<E>,
@@ -206,6 +208,9 @@ impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
         }
     }
 
+    /// Inspect the error if the operation failed.
+    ///
+    /// This could also be [`Error::TimedOut`] containing an error from a previous iteration.
     pub fn inspect_err(self, inspect_err: impl FnOnce(&Error<E>)) -> Self {
         Self {
             result: self.result.inspect_err(inspect_err),
@@ -213,6 +218,16 @@ impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
         }
     }
 
+    /// Check the result, testing the error for retryability using [`RetryableError`] if applicable.
+    ///
+    /// If the operation was successful, `Ok(Some(_))` is returned.
+    ///
+    /// If the operation failed but [`RetryableError::can_retry()`] returned `true`,
+    /// `Ok(None)` is returned and the error is stored in the [`EaseOff`] instance for the next
+    /// iteration.
+    ///
+    /// If the error was determined to be fatal or the [deadline][EaseOff::deadline()] has elapsed,
+    /// `Err` is returned.
     pub fn or_retry(self) -> Result<Option<T>, E>
     where
         E: RetryableError,
@@ -220,6 +235,19 @@ impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
         self.or_retry_if(RetryableError::can_retry)
     }
 
+    /// Check the result, testing the error for retryability using the given closure if applicable.
+    ///
+    /// The closure will be invoked with either the error from the current attempt,
+    /// or a previous error if the [deadline][EaseOff::deadline()] has elapsed
+    /// (this is indicated by the [`Error::TimedOut`] variant).
+    ///
+    /// If the operation was successful, `Ok(Some(_))` is returned.
+    ///
+    /// If the operation failed but the given closure returns `true`,
+    /// `Ok(None)` is returned and the error is stored in the [`EaseOff`] instance for the next
+    /// iteration.
+    ///
+    /// If the error was determined to be fatal, `Err` is returned.
     pub fn or_retry_if(self, can_retry: impl FnOnce(&Error<E>) -> bool) -> Result<Option<T>, E> {
         match self.result {
             Ok(success) => {
@@ -238,15 +266,37 @@ impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
     }
 }
 
+/// Trait which may be implemented for error types to enable code reuse with [`EaseOff`].
 pub trait RetryableError {
+    /// Returns `true` if the error is non-fatal, `false` otherwise.
     fn can_retry(&self) -> bool;
 }
 
+/// Error type for [`EaseOff`] which includes the fatality level of the error.
 #[derive(Debug)]
 pub enum Error<E> {
+    /// The inner error has not been determined to be fatal yet.
+    ///
+    /// [`RetryableError::can_retry()`] passes through to the inner error.
     MaybeRetryable(E),
+    /// The error was determined to be fatal.
+    ///
+    /// Always returns `false` from [`RetryableError::can_retry()`].
     Fatal(E),
+    /// The [deadline][EaseOff::deadline()] has elapsed.
+    ///
+    /// Contained is the error from the most recent attempt.
+    ///
+    /// Always returns `false` from [`RetryableError::can_retry()`].
     TimedOut(TimeoutError<E>),
+}
+
+/// Error wrapper type indicating a failure due to a [deadline][EaseOff::deadline()] elapsing.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct TimeoutError<E> {
+    /// The error from the most recent failed attempt.
+    pub last_error: E,
 }
 
 impl<E: RetryableError> RetryableError for Error<E> {
@@ -260,6 +310,7 @@ impl<E: RetryableError> RetryableError for Error<E> {
 }
 
 impl<E> Error<E> {
+    /// Convert [`Error::TimedOut`], if applicable, to another variant.
     pub fn on_timeout(self, on_timeout: impl FnOnce(TimeoutError<E>) -> Self) -> Self {
         match self {
             Self::TimedOut(e) => on_timeout(e),
@@ -267,6 +318,7 @@ impl<E> Error<E> {
         }
     }
 
+    /// Map the inner error type, retaining its retryability status.
     pub fn map<E2>(self, map: impl FnOnce(E) -> E2) -> Error<E2> {
         match self {
             Self::TimedOut(e) => Error::TimedOut(TimeoutError {
@@ -277,6 +329,7 @@ impl<E> Error<E> {
         }
     }
 
+    /// Unwrap the inner error type.
     pub fn into_inner(self) -> E {
         match self {
             Self::TimedOut(e) => e.last_error,
@@ -284,12 +337,6 @@ impl<E> Error<E> {
             Self::Fatal(e) => e,
         }
     }
-}
-
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct TimeoutError<E> {
-    pub last_error: E,
 }
 
 fn blocking_sleep_until(instant: Instant) {
