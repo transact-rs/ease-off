@@ -240,7 +240,7 @@ where
                 LazyOpPinned::NotStarted(op) => {
                     let op = op.take().expect("`op` already taken");
                     self.set(LazyOp::Started(op()));
-                },
+                }
                 LazyOpPinned::Started(fut) => {
                     return fut.poll(cx);
                 }
