@@ -1,9 +1,10 @@
 use crate::{EaseOff, Error, ResultWrapper, TimeoutError};
 
-use pin_project_lite::pin_project;
+use pin_project::pin_project;
 use std::future::{Future, IntoFuture};
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
+use std::time::Instant;
 
 /// Backoff support for `async/await`.
 ///
@@ -57,13 +58,29 @@ pub struct TryAsync<'a, E, F> {
     op: F,
 }
 
-pin_project! {
-    pub struct TryAsyncFuture<'a, E, Fut> {
-        // Wrapped in `Option` so we can take and subsequently return ownership in `poll()`
-        ease_off: Option<&'a mut EaseOff<E>>,
-        #[pin]
-        op: Fut,
-    }
+#[pin_project]
+pub struct TryAsyncFuture<'a, E, F, Fut> {
+    // Wrapped in `Option` so we can take and subsequently return ownership in `poll()`
+    ease_off: Option<&'a mut EaseOff<E>>,
+    #[pin]
+    op: LazyOp<F, Fut>,
+    #[pin]
+    sleep: Sleep,
+}
+
+#[pin_project(project = LazyOpPinned)]
+enum LazyOp<F, Fut> {
+    NotStarted(Option<F>),
+    Started(#[pin] Fut),
+}
+
+// Tried to make this work with `pin-project-lite`, but couldn't
+#[pin_project(project = SleepPinned)]
+enum Sleep {
+    Unset,
+    Skipped,
+    #[cfg(feature = "tokio")]
+    Tokio(#[pin] tokio::time::Sleep),
 }
 
 impl<'a, T, E, F, Fut> IntoFuture for TryAsync<'a, E, F>
@@ -72,12 +89,13 @@ where
     Fut: Future<Output = Result<T, E>>,
 {
     type Output = ResultWrapper<'a, T, E>;
-    type IntoFuture = TryAsyncFuture<'a, E, Fut>;
+    type IntoFuture = TryAsyncFuture<'a, E, F, Fut>;
 
     fn into_future(self) -> Self::IntoFuture {
         TryAsyncFuture {
             ease_off: Some(self.ease_off),
-            op: (self.op)(),
+            sleep: Sleep::Unset,
+            op: LazyOp::NotStarted(Some(self.op)),
         }
     }
 }
@@ -136,14 +154,41 @@ where
     }
 }
 
-impl<'a, T, E, Fut> Future for TryAsyncFuture<'a, E, Fut>
+impl<'a, T, E, F, Fut> Future for TryAsyncFuture<'a, E, F, Fut>
 where
+    F: FnOnce() -> Fut,
     Fut: Future<Output = Result<T, E>>,
 {
     type Output = ResultWrapper<'a, T, E>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
+        let mut this = self.project();
+
+        if this.sleep.is_unset() {
+            let ease_off = this
+                .ease_off
+                .as_deref_mut()
+                .expect("BUG: this.ease_off already taken");
+
+            match ease_off.next_retry_at() {
+                Ok(Some(retry_at)) => {
+                    this.sleep.set(Sleep::until(retry_at));
+                }
+                Ok(None) => {
+                    this.sleep.set(Sleep::Skipped);
+                }
+                Err(e) => {
+                    return Poll::Ready(
+                        this.ease_off
+                            .take()
+                            .expect("BUG: this.ease_off already taken")
+                            .wrap_result(Err(e)),
+                    );
+                }
+            }
+        }
+
+        ready!(this.sleep.as_mut().poll(cx));
 
         let res = ready!(this.op.poll(cx)).map_err(Error::MaybeRetryable);
 
@@ -153,5 +198,53 @@ where
                 .expect("BUG: this.ease_off already taken")
                 .wrap_result(res),
         )
+    }
+}
+
+impl<T, E, F, Fut> Future for LazyOp<F, Fut>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    type Output = Result<T, E>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            match self.as_mut().project() {
+                LazyOpPinned::NotStarted(op) => {
+                    let op = op.take().expect("`op` already taken");
+                    self.set(LazyOp::Started(op()));
+                },
+                LazyOpPinned::Started(fut) => {
+                    return fut.poll(cx);
+                }
+            }
+        }
+    }
+}
+
+impl Sleep {
+    fn until(instant: Instant) -> Self {
+        #[cfg(feature = "tokio")]
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Self::Tokio(tokio::time::sleep_until(instant.into()));
+        }
+
+        panic!("no async runtime enabled")
+    }
+
+    fn is_unset(&self) -> bool {
+        matches!(self, Sleep::Unset)
+    }
+}
+
+impl Future for Sleep {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.project() {
+            SleepPinned::Unset | SleepPinned::Skipped => Poll::Ready(()),
+            SleepPinned::Tokio(sleep) => sleep.poll(cx),
+        }
     }
 }
