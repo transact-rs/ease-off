@@ -102,8 +102,19 @@ enum LazyOp<F, Fut> {
 enum Sleep {
     Unset,
     Skipped,
+    Forever,
     #[cfg(feature = "tokio")]
     Tokio(#[pin] tokio::time::Sleep),
+    #[cfg(feature = "async-io-2")]
+    AsyncIo2(async_io_2::Timer),
+}
+
+#[pin_project]
+struct Timeout<Fut> {
+    #[pin]
+    sleep: Sleep,
+    #[pin]
+    future: Fut,
 }
 
 impl<'a, T, E, F, Fut> IntoFuture for TryAsync<'a, E, F>
@@ -161,22 +172,21 @@ where
         self,
         make_error: impl FnOnce(Option<E>) -> E,
     ) -> ResultWrapper<'a, T, E> {
-        if let Some(deadline) = self.ease_off.deadline {
-            let res = tokio::time::timeout_at(deadline.into(), (self.op)())
-                .await
-                .map_or_else(
-                    |_| {
-                        Err(Error::TimedOut(TimeoutError {
-                            last_error: make_error(self.ease_off.last_error.take()),
-                        }))
-                    },
-                    |res| res.map_err(Error::MaybeRetryable),
-                );
-
-            self.ease_off.wrap_result(res)
-        } else {
-            self.await
+        let res = Timeout {
+            sleep: self.ease_off.deadline.map_or(Sleep::Forever, Sleep::until),
+            future: (self.op)(),
         }
+        .await
+        .map_or_else(
+            |_| {
+                Err(Error::TimedOut(TimeoutError {
+                    last_error: make_error(self.ease_off.last_error.take()),
+                }))
+            },
+            |res| res.map_err(Error::MaybeRetryable),
+        );
+
+        self.ease_off.wrap_result(res)
     }
 }
 
@@ -256,7 +266,17 @@ impl Sleep {
             return Self::Tokio(tokio::time::sleep_until(instant.into()));
         }
 
-        panic!("no async runtime enabled")
+        #[cfg(feature = "async-io-2")]
+        {
+            Self::AsyncIo2(async_io_2::Timer::at(instant))
+        }
+
+        #[cfg(not(feature = "async-io-2"))]
+        if cfg!(feature = "tokio") {
+            panic!("no Tokio runtime available")
+        } else {
+            panic!("no async runtime enabled")
+        }
     }
 
     fn is_unset(&self) -> bool {
@@ -270,7 +290,29 @@ impl Future for Sleep {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.project() {
             SleepPinned::Unset | SleepPinned::Skipped => Poll::Ready(()),
+            SleepPinned::Forever => Poll::Pending,
+            #[cfg(feature = "tokio")]
             SleepPinned::Tokio(sleep) => sleep.poll(cx),
+            #[cfg(feature = "async-io-2")]
+            SleepPinned::AsyncIo2(sleep) => Pin::new(sleep).poll(cx).map(|_| ()),
         }
+    }
+}
+
+impl<Fut: Future> Future for Timeout<Fut> {
+    type Output = Result<Fut::Output, ()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+
+        if let Poll::Ready(ready) = this.future.poll(cx) {
+            return Poll::Ready(Ok(ready));
+        }
+
+        if let Poll::Ready(()) = this.sleep.poll(cx) {
+            return Poll::Ready(Err(()));
+        }
+
+        Poll::Pending
     }
 }

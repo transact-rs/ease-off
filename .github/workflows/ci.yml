@@ -40,7 +40,13 @@ jobs:
           rustup update
 
       - name: Lint
-        run: cargo clippy --all-targets --workspace -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Lint (Tokio)
+        run: cargo clippy --all-targets --features=tokio -- -D warnings
+
+      - name: Lint (async-io)
+        run: cargo clippy --all-targets --features=async-io-2 -- -D warnings
 
   test:
     name: Test
@@ -61,3 +67,12 @@ jobs:
 
     - name: Run Tests
       run: cargo test --workspace
+
+    - name: Run Tests (Tokio)
+      run: cargo test --features=tokio
+
+    - name: Run Tests
+      run: cargo test --features=async-io-2
+
+    - name: Run example (async-std)
+      run: cargo run --features=async-io-2 --example async-std
