@@ -37,8 +37,8 @@ use crate::core::EaseOffCore;
 use std::num::Saturating;
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "tokio")]
-#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
+#[cfg(feature = "__futures")]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "tokio", feature = "async-io-2"))))]
 pub mod futures;
 
 pub mod core;

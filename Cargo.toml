@@ -1,6 +1,6 @@
 [package]
 name = "ease-off"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.80.0"
 
@@ -11,7 +11,10 @@ authors = ["Austin Bonander <austin.bonander+ease-off@gmail.com>"]
 license = "MIT OR Apache-2.0"
 
 [features]
-tokio = ["dep:tokio", "pin-project"]
+tokio = ["dep:tokio", "__futures"]
+async-io-2 = ["dep:async-io-2", "__futures"]
+
+__futures = ["pin-project"]
 
 [dependencies]
 pin-project = { version = "1", optional = true }
@@ -21,6 +24,12 @@ thiserror = "1.0.64"
 [dependencies.tokio]
 version = "1.0.1"
 features = ["rt", "time"]
+optional = true
+
+# Also provides support for `async-std ^1.13`
+[dependencies.async-io-2]
+package = "async-io"
+version = "2"
 optional = true
 
 [dev-dependencies]
@@ -34,6 +43,10 @@ features = ["rt", "time", "macros"]
 version = "0.7.12"
 features = ["time"]
 
+[dev-dependencies.async-std]
+version = "1.13.0"
+features = ["attributes"]
+
 [[example]]
 name = "tokio"
 required-features = ["tokio"]
@@ -41,6 +54,10 @@ required-features = ["tokio"]
 [[example]]
 name = "tokio-concurrent"
 required-features = ["tokio"]
+
+[[example]]
+name = "async-std"
+required-features = ["async-io-2"]
 
 [package.metadata.docs.rs]
 # Whether to pass `--all-features` to Cargo (default: false)
