@@ -329,7 +329,16 @@ impl<E> Error<E> {
         }
     }
 
-    /// Unwrap the inner error type.
+    /// Get the inner error.
+    pub fn inner(&self) -> &E {
+        match self {
+            Self::TimedOut(e) => &e.last_error,
+            Self::MaybeRetryable(e) => e,
+            Self::Fatal(e) => e,
+        }
+    }
+
+    /// Unwrap the inner error.
     pub fn into_inner(self) -> E {
         match self {
             Self::TimedOut(e) => e.last_error,
