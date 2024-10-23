@@ -34,7 +34,9 @@
 #![warn(missing_docs)]
 
 use crate::core::EaseOffCore;
+use std::cmp;
 use std::num::Saturating;
+use std::ops::ControlFlow;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "futures")]
@@ -57,6 +59,7 @@ pub struct EaseOff<E> {
     deadline: Option<Instant>,
     num_attempts: Saturating<u32>,
     last_error: Option<E>,
+    next_retry_at: Option<Instant>,
 }
 
 impl<E> EaseOff<E> {
@@ -120,10 +123,12 @@ impl<E> EaseOff<E> {
 
         if self.last_error.is_none() {
             self.num_attempts = Saturating(0);
-            return Ok(self
-                .core
-                .nth_retry_at(0, now, None, &mut rng)
-                .expect("passed `None` for deadline, should not be `Err`"));
+            return Ok(cmp::max(
+                self.core
+                    .nth_retry_at(0, now, None, &mut rng)
+                    .expect("passed `None` for deadline, should not be `Err`"),
+                self.next_retry_at.take(),
+            ));
         }
 
         let attempt_num = self.num_attempts.0;
@@ -140,12 +145,13 @@ impl<E> EaseOff<E> {
                         .expect("BUG: `last_error` should not be `None` here"),
                 })
             })
+            .map(|retry_at| cmp::max(retry_at, self.next_retry_at.take()))
     }
 
     fn wrap_result<T>(&mut self, result: Result<T, Error<E>>) -> ResultWrapper<'_, T, E> {
         ResultWrapper {
             result,
-            last_error: &mut self.last_error,
+            ease_off: self,
         }
     }
 }
@@ -189,7 +195,7 @@ impl<E> EaseOff<E> {
 #[must_use = "`.or_retry()` or `.or_retry_if()` must be called"]
 pub struct ResultWrapper<'a, T, E: 'a> {
     result: Result<T, Error<E>>,
-    last_error: &'a mut Option<E>,
+    ease_off: &'a mut EaseOff<E>,
 }
 
 impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
@@ -204,7 +210,7 @@ impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
     ) -> ResultWrapper<'a, T, E> {
         Self {
             result: self.result.map_err(|e| e.on_timeout(on_timeout)),
-            last_error: self.last_error,
+            ease_off: self.ease_off,
         }
     }
 
@@ -214,7 +220,7 @@ impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
     pub fn inspect_err(self, inspect_err: impl FnOnce(&Error<E>)) -> Self {
         Self {
             result: self.result.inspect_err(inspect_err),
-            last_error: self.last_error,
+            ease_off: self.ease_off,
         }
     }
 
@@ -249,19 +255,56 @@ impl<'a, T, E: 'a> ResultWrapper<'a, T, E> {
     ///
     /// If the error was determined to be fatal, `Err` is returned.
     pub fn or_retry_if(self, can_retry: impl FnOnce(&Error<E>) -> bool) -> Result<Option<T>, E> {
+        self.or_retry_with(|e| {
+            if can_retry(e) {
+                ControlFlow::Continue(None)
+            } else {
+                ControlFlow::Break(())
+            }
+        })
+    }
+
+    /// Check the result, testing the error for retryability using the given closure if applicable.
+    ///
+    /// The closure will be invoked with either the error from the current attempt,
+    /// or a previous error if the [deadline][EaseOff::deadline()] has elapsed
+    /// (this is indicated by the [`Error::TimedOut`] variant).
+    ///
+    /// If the operation was successful, `Ok(Some(_))` is returned.
+    ///
+    /// If the operation failed but the given closure returns `ControlFlow::Continue`,
+    /// `Ok(None)` is returned and the error is stored in the [`EaseOff`] instance for the next
+    /// iteration.
+    ///
+    /// If the given error specifies a retry time,
+    /// the closure may return `Control::Continue(Some(retry_at))`
+    /// with the next attempt waiting until `retry_at` or the current backoff,
+    /// whichever is later.
+    ///
+    /// Otherwise, the closure should return `ControlFlow::Continue(None)` to use the
+    /// next backoff time.
+    ///
+    /// If the error is fatal, the closure should return `ControlFlow::Break(())`
+    /// and then `Err` is returned.
+    pub fn or_retry_with(
+        self,
+        should_retry: impl FnOnce(&Error<E>) -> ControlFlow<(), Option<Instant>>,
+    ) -> Result<Option<T>, E> {
         match self.result {
             Ok(success) => {
-                *self.last_error = None;
+                self.ease_off.last_error = None;
+                self.ease_off.next_retry_at = None;
                 Ok(Some(success))
             }
-            Err(e) => {
-                if can_retry(&e) {
-                    *self.last_error = Some(e.into_inner());
+            Err(e) => match should_retry(&e) {
+                ControlFlow::Continue(next_retry_at) => {
+                    self.ease_off.last_error = Some(e.into_inner());
+                    self.ease_off.next_retry_at = next_retry_at;
+
                     Ok(None)
-                } else {
-                    Err(e.into_inner())
                 }
-            }
+                ControlFlow::Break(()) => Err(e.into_inner()),
+            },
         }
     }
 }

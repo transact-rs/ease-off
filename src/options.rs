@@ -232,6 +232,7 @@ impl Options {
             deadline,
             num_attempts: Saturating(0),
             last_error: None,
+            next_retry_at: None,
         }
     }
 }
