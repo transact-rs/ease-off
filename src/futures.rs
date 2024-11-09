@@ -4,6 +4,7 @@ use crate::{EaseOff, Error, ResultWrapper, TimeoutError};
 
 use pin_project::pin_project;
 use std::future::{Future, IntoFuture};
+use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 use std::time::Instant;
@@ -102,7 +103,8 @@ enum LazyOp<F, Fut> {
 enum Sleep {
     Unset,
     Skipped,
-    Forever,
+    // #[pin_project] errors if no variant with a field is enabled
+    Forever(#[pin] PhantomPinned),
     #[cfg(feature = "tokio")]
     Tokio(#[pin] tokio::time::Sleep),
     #[cfg(feature = "async-io-2")]
@@ -173,7 +175,10 @@ where
         make_error: impl FnOnce(Option<E>) -> E,
     ) -> ResultWrapper<'a, T, E> {
         let res = Timeout {
-            sleep: self.ease_off.deadline.map_or(Sleep::Forever, Sleep::until),
+            sleep: self
+                .ease_off
+                .deadline
+                .map_or(Sleep::Forever(PhantomPinned), Sleep::until),
             future: (self.op)(),
         }
         .await
@@ -290,7 +295,7 @@ impl Future for Sleep {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.project() {
             SleepPinned::Unset | SleepPinned::Skipped => Poll::Ready(()),
-            SleepPinned::Forever => Poll::Pending,
+            SleepPinned::Forever(..) => Poll::Pending,
             #[cfg(feature = "tokio")]
             SleepPinned::Tokio(sleep) => sleep.poll(cx),
             #[cfg(feature = "async-io-2")]
